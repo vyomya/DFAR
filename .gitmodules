@@ -1,0 +1,3 @@
+[submodule "external/geneval"]
+	path = external/geneval
+	url = https://github.com/djghosh13/geneval.git
