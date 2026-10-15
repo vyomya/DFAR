@@ -1,3 +1,6 @@
 [submodule "external/geneval"]
 	path = external/geneval
 	url = https://github.com/djghosh13/geneval.git
+[submodule "external/VAREdit"]
+	path = external/VAREdit
+	url = https://github.com/HiDream-ai/VAREdit.git
