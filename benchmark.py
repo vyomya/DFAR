@@ -23,14 +23,16 @@ REPO = ROOT / "external/VAREdit"
 SOURCE_RUN = Path("/fs/nexus-scratch/vyomwal5/dfar_results/runs/baseline/sd15")
 OUT = Path("/fs/nexus-scratch/vyomwal5/dfar_results/varedit/manual_sd15")
 CFG, TAU, SEED = 3.0, 0.1, 42  # Guidance, sampling temperature, randomness seed.
+import json
+from pathlib import Path
+
+path = Path(__file__).resolve().parent / "results/qwen8b_cases.json"
+annotations = json.loads(path.read_text())
+
 CASES = [
-    (405,0, "Elephant should be added to the scene, it should be placed on the right of the zebra."),
-    (401,0, "Ball should be on the left of the bed, not on it."),
-    (406,2,"Add a bear to the scene, then place it left of the bench"),
-    (410,1,"photo of the cow is in the tv, it should be above cow"),
-    (412,0,"Add a banana to the scene, it should be placed on the right of the suitcase."),  # (prompt_id, sample_id, instruction): fill after viewing image.
-    # For a verified correct image, try: "Keep this image unchanged."
-    # For a real color error, name the object and the required color explicitly.
+    (c["prompt_id"], c["sample_id"], c["instruction"])
+    for c in annotations
+    if c["decision"] == "edit" and c["status"] == "ok"
 ]
 
 if not CASES or any(not instruction.strip() for _, _, instruction in CASES):

@@ -1,0 +1,47 @@
+[
+  {
+    "prompt_id": 401,
+    "sample_id": 0,
+    "image_path": "/fs/nexus-scratch/vyomwal5/dfar_results/runs/baseline/sd15/00401/samples/0000.png",
+    "original_prompt": "a photo of a bed right of a sports ball",
+    "decision": "edit",
+    "edit_type": "position",
+    "instruction": "Move bed left of sports ball. Preserve all unrelated objects, their attributes, and the background.",
+    "diagnosis": {
+      "decision": "edit",
+      "edit_type": "position",
+      "observed_error": "The bed is left of the sports ball, not right of it.",
+      "target": "bed",
+      "relation": "left of",
+      "reference": "sports ball",
+      "location": null,
+      "extras": null,
+      "count": null,
+      "color": null
+    },
+    "status": "ok",
+    "raw_response": "{\n  \"decision\": \"edit\",\n  \"edit_type\": \"position\",\n  \"observed_error\": \"The bed is left of the sports ball, not right of it.\",\n  \"target\": \"bed\",\n  \"relation\": \"left of\",\n  \"reference\": \"sports ball\",\n  \"location\": null,\n  \"extras\": null,\n  \"count\": null,\n  \"color\": null\n}",
+    "generation_seconds": 5.938427926041186,
+    "peak_gpu_gb": 16.494041919708252
+  },
+  {
+    "prompt_id": 405,
+    "sample_id": 0,
+    "image_path": "/fs/nexus-scratch/vyomwal5/dfar_results/runs/baseline/sd15/00405/samples/0000.png",
+    "original_prompt": "a photo of a zebra left of an elephant",
+    "decision": "edit",
+    "edit_type": "missing_object",
+    "instruction": "Add one elephant right of the zebra. Preserve all unrelated objects, their attributes, and the background.",
+    "diagnosis": {
+      "decision": "edit",
+      "edit_type": "missing_object",
+      "observed_error": "The elephant is not present in the image.",
+      "target": "elephant",
+      "location": "right of the zebra"
+    },
+    "status": "ok",
+    "raw_response": "{\n  \"decision\": \"edit\",\n  \"edit_type\": \"missing_object\",\n  \"observed_error\": \"The elephant is not present in the image.\",\n  \"target\": \"elephant\",\n  \"location\": \"right of the zebra\"\n}",
+    "generation_seconds": 2.09635462006554,
+    "peak_gpu_gb": 16.494184017181396
+  }
+]
