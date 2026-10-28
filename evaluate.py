@@ -81,9 +81,7 @@ def main():
     p.add_argument('--detector-dir', required=True)
     p.add_argument('--benchmark-source', default='data/geneval/source.json')
     p.add_argument('--out', required=True)
-    p.add_argument(
-    "--before-results",
-    help="Original baseline JSONL; enables edited-subset evaluation",)
+    p.add_argument("--before-results",help="Original baseline JSONL; enables edited-subset evaluation",)
     a = p.parse_args()
     root = Path(a.run).resolve()
     repo = Path(a.geneval_repo).resolve()

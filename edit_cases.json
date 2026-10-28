@@ -1,0 +1,52 @@
+[
+  {
+    "prompt_id": 405,
+    "sample_id": 0,
+    "instruction": "Elephant should be added to the scene, it should be placed on the right of the zebra.",
+    "edit_type": "",
+    "original_prompt": "",
+    "observed_error": "",
+    "is_control": false,
+    "annotator": ""
+  },
+  {
+    "prompt_id": 401,
+    "sample_id": 0,
+    "instruction": "Ball should be on the left of the bed, not on it.",
+    "edit_type": "",
+    "original_prompt": "",
+    "observed_error": "",
+    "is_control": false,
+    "annotator": ""
+  },
+  {
+    "prompt_id": 406,
+    "sample_id": 2,
+    "instruction": "Add a bear to the scene, then place it left of the bench",
+    "edit_type": "",
+    "original_prompt": "",
+    "observed_error": "",
+    "is_control": false,
+    "annotator": ""
+  },
+  {
+    "prompt_id": 410,
+    "sample_id": 1,
+    "instruction": "photo of the cow is in the tv, it should be above cow",
+    "edit_type": "",
+    "original_prompt": "",
+    "observed_error": "",
+    "is_control": false,
+    "annotator": ""
+  },
+  {
+    "prompt_id": 412,
+    "sample_id": 0,
+    "instruction": "Add a banana to the scene, it should be placed on the right of the suitcase.",
+    "edit_type": "",
+    "original_prompt": "",
+    "observed_error": "",
+    "is_control": false,
+    "annotator": ""
+  }
+]
