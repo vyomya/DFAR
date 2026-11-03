@@ -1,0 +1,22 @@
+{
+  "backpack": "backpacks",
+  "bench": "benches",
+  "bicycle": "bicycles",
+  "book": "books",
+  "bottle": "bottles",
+  "bowl": "bowls",
+  "car": "cars",
+  "chair": "chairs",
+  "clock": "clocks",
+  "cup": "cups",
+  "frisbee": "frisbees",
+  "handbag": "handbags",
+  "motorcycle": "motorcycles",
+  "skateboard": "skateboards",
+  "suitcase": "suitcases",
+  "surfboard": "surfboards",
+  "tie": "ties",
+  "toothbrush": "toothbrushes",
+  "umbrella": "umbrellas",
+  "vase": "vases"
+}

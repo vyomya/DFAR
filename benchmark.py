@@ -1,113 +1,169 @@
-"""Edit existing SD1.5 images with VAREdit-8B-512; no generation or training.
+"""Run manual, generic, or Qwen-guided VAREdit experiments on existing images.
 
-Run in the prepared varedit environment on a GPU node:
-    python -u varedit_experiment.py
-
-Edit SOURCE_RUN and CASES below first. Inspect each original image and write
-its correction instruction yourself. Add more tuples to process more images.
-The official VAREdit repository is required at REPO; no DFAR helpers are used.
-Outputs: edited PNG, before/after PNG, and settings JSON for each case.
-Re-running the same case overwrites its experiment outputs, not the baseline.
-This is an exploratory editing test, not a GenEval evaluation or training run.
+Uses the existing locally patched VAREdit-8B-512 loader (two GPUs).
+No training, image regeneration, or evaluation is performed here.
+Use a fresh --out directory for each run; this minimal script does not resume.
 """
-from pathlib import Path
+import argparse
+import ast
 import json
 import os
 import subprocess
 import sys
 import time
-
-# 1. Configuration: change these paths and instructions as needed.
-ROOT = Path("/nfshomes/vyomwal5/DFAR")
-REPO = ROOT / "external/VAREdit"
-SOURCE_RUN = Path("/fs/nexus-scratch/vyomwal5/dfar_results/runs/baseline/sd15")
-OUT = Path("/fs/nexus-scratch/vyomwal5/dfar_results/varedit/manual_sd15")
-CFG, TAU, SEED = 3.0, 0.1, 42  # Guidance, sampling temperature, randomness seed.
-import json
 from pathlib import Path
 
-path = Path(__file__).resolve().parent / "results/qwen8b_cases.json"
-annotations = json.loads(path.read_text())
+ROOT = Path(__file__).resolve().parent
+SOURCE_RUN = Path("/fs/nexus-scratch/vyomwal5/dfar_results/runs/baseline/sd15")
+CFG, TAU, SEED = 3.0, 0.1, 42
 
-CASES = [
-    (c["prompt_id"], c["sample_id"], c["instruction"])
-    for c in annotations
-    if c["decision"] == "edit" and c["status"] == "ok"
-]
 
-if not CASES or any(not instruction.strip() for _, _, instruction in CASES):
-    raise SystemExit("Fill CASES with image IDs and instructions before running.")
+def read_metadata(folder):
+    text = (folder / "metadata.jsonl").read_text().strip()
+    # Support one JSON object, JSONL, and older Python-dict metadata.
+    for candidate in (text, text.splitlines()[0] if text else ""):
+        try:
+            metadata = json.loads(candidate)
+        except json.JSONDecodeError:
+            try:
+                metadata = ast.literal_eval(candidate)
+            except (ValueError, SyntaxError):
+                continue
+        if isinstance(metadata, dict) and "prompt" in metadata:
+            return metadata
+    raise ValueError(f"Invalid metadata: {folder / 'metadata.jsonl'}")
 
-# Set cache BEFORE importing Hugging Face. Models download to scratch.
-os.environ["HF_HOME"] = "/fs/nexus-scratch/vyomwal5/.cache/huggingface"
-os.environ["HF_HUB_CACHE"] = os.environ["HF_HOME"] + "/hub"
-OUT.mkdir(parents=True, exist_ok=True)
-os.chdir(REPO)
-sys.path.insert(0, str(REPO))
 
-import torch
-assert torch.cuda.device_count() >= 2, "This version requires two GPUs."
-torch.cuda.set_device(0)
-import matplotlib
-matplotlib.use("Agg")  # Save figures without needing a GUI on the cluster.
-import matplotlib.pyplot as plt
-from PIL import Image
-from huggingface_hub import snapshot_download
-from infer import load_model, generate_image
+def make_cases(mode, annotations, originals):
+    """Only select source IDs; original prompts always come from run metadata."""
+    if mode == "generic":
+        return [
+            dict(prompt_id=pid, sample_id=sid, decision="edit", instruction=(
+                f'The original generation prompt was: "{read_metadata(image.parent.parent)["prompt"]}". '
+                "Edit this image so it satisfies that prompt. "
+                "Preserve content that already matches the prompt. "
+                "If the image already satisfies the prompt, leave it unchanged."
+            ))
+            for (pid, sid), image in originals.items()
+        ]
+    selected = {(int(c["prompt_id"]), int(c["sample_id"])) for c in annotations}
+    if len(selected) != len(annotations):
+        raise ValueError("Duplicate prompt/sample IDs in cases file")
+    if not selected <= originals.keys():
+        raise ValueError(f"Selected images missing: {sorted(selected - originals.keys())}")
+    if mode == "qwen" and selected != originals.keys():
+        raise ValueError("Qwen JSON must contain a decision for every original image")
+    cases = []
+    for c in annotations:
+        pid, sid = int(c["prompt_id"]), int(c["sample_id"])
+        prompt = read_metadata(originals[(pid, sid)].parent.parent)["prompt"]
+        if c.get("original_prompt") and c["original_prompt"].strip() != prompt.strip():
+            raise ValueError(f"Original prompt mismatch: {pid}/{sid}")
+        if mode == "manual":
+            decision = "edit"
+            instruction = (c.get("instruction") or "").strip()
+            if not instruction and c.get("is_control"):
+                instruction = "Keep this image unchanged. Preserve all objects, colors, positions, and background."
+        else:
+            decision = c["decision"]
+            if decision not in {"edit", "keep", "review"}:
+                raise ValueError(f"Invalid Qwen decision: {decision}")
+            instruction = c.get("instruction") if decision == "edit" else None
+            if decision == "edit" and c.get("status", "ok") != "ok":
+                raise ValueError(f"Invalid Qwen output marked for editing: {pid}/{sid}")
+        if decision == "edit" and (not isinstance(instruction, str) or not instruction.strip()):
+            raise ValueError(f"Missing editing instruction: {pid}/{sid}")
+        cases.append(dict(prompt_id=pid, sample_id=sid, decision=decision,
+                          instruction=instruction, status=c.get("status"),
+                          is_control=c.get("is_control", False)))
+    return cases
 
-# 2. Download only the chosen AR checkpoint, visual tokenizer, and text encoder.
-weights = Path(snapshot_download(
-    "HiDream-ai/VAREdit",
-    allow_patterns=["8B-512.pth", "infinity_vae_d56_f8_14_patchify.pth", "flan-t5-xl/*"],
-))
-print("Loading VAREdit on", torch.cuda.get_device_name(0), flush=True)
-components = load_model(str(weights), str(weights / "8B-512.pth"), "8B", 512)
-commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 
-# 3. Reuse the loaded model for all cases. No gradients or weight updates.
-for prompt_id, sample_id, instruction in CASES:
-    name = f"{prompt_id:05d}_{sample_id:04d}"
-    folder = SOURCE_RUN / f"{prompt_id:05d}"
-    source = folder / "samples" / f"{sample_id:04d}.png"
-    metadata = json.loads((folder / "metadata.jsonl").read_text())
-    prompt = metadata["prompt"]
-    with Image.open(source) as image:
-        original = image.convert("RGB")
-    print(f"\n{name}\nPrompt: {prompt}\nEdit: {instruction}", flush=True)
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--mode", choices=["manual", "generic", "qwen"], required=True)
+    p.add_argument("--cases", type=Path, help="Manual annotations or complete Qwen JSON")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--run", type=Path, default=SOURCE_RUN)
+    p.add_argument("--varedit-repo", type=Path, default=ROOT / "external/VAREdit")
+    a = p.parse_args()
+    source_run, out, repo = a.run.resolve(), a.out.resolve(), a.varedit_repo.resolve()
+    if out.exists() and any(out.iterdir()):
+        raise ValueError(f"Choose a fresh output directory; no resume implemented: {out}")
+    originals = {}
+    for image in sorted(source_run.glob("*/samples/*.png")):
+        if image.parent.parent.name.isdigit() and image.stem.isdigit():
+            key = (int(image.parent.parent.name), int(image.stem))
+            if key in originals:
+                raise ValueError(f"Duplicate source image ID: {key}")
+            originals[key] = image
+    if not originals:
+        raise ValueError(f"No source images found: {source_run}")
+    if a.mode != "generic" and a.cases is None:
+        p.error("--cases is required for manual and qwen modes")
+    annotations = json.loads(a.cases.read_text()) if a.cases else []
+    cases = make_cases(a.mode, annotations, originals)
+    if not cases:
+        raise ValueError("No images selected")
 
-    # Source RGB + instruction -> coarse-to-fine AR image tokens -> edited RGB.
-    torch.cuda.synchronize()
-    start = time.perf_counter()
-    with torch.inference_mode():
-        edited = generate_image(components, str(source), instruction,
-                                cfg=CFG, tau=TAU, seed=SEED)
-    torch.cuda.synchronize()
-    seconds = time.perf_counter() - start
-    target = OUT / "after" / f"{prompt_id:05d}"
-    (target / "samples").mkdir(parents=True, exist_ok=True)
+    # Respect exports from the terminal. Defaults retain the existing scratch cache.
+    os.environ.setdefault("HF_HOME", "/fs/nexus-scratch/vyomwal5/.cache/huggingface")
+    os.environ.setdefault("HF_HUB_CACHE", str(Path(os.environ["HF_HOME"]) / "hub"))
+    components, weights, commit = None, None, None
+    if any(c["decision"] == "edit" for c in cases):
+        os.chdir(repo)
+        sys.path.insert(0, str(repo))
+        import torch
+        from huggingface_hub import snapshot_download
+        from infer import load_model, generate_image
+        if torch.cuda.device_count() < 2:
+            raise RuntimeError("The existing patched VAREdit loader requires two visible GPUs.")
+        torch.cuda.set_device(0)
+        weights = Path(snapshot_download(
+            "HiDream-ai/VAREdit",
+            allow_patterns=["8B-512.pth", "infinity_vae_d56_f8_14_patchify.pth", "flan-t5-xl/*"],
+        ))
+        print("Loading VAREdit on", torch.cuda.get_device_name(0), flush=True)
+        components = load_model(str(weights), str(weights / "8B-512.pth"), "8B", 512)
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 
-    edited.save(target / "samples" / f"{sample_id:04d}.png")
-    (target / "metadata.jsonl").write_text(json.dumps(metadata) + "\n")
+    out.mkdir(parents=True, exist_ok=True)
+    settings = dict(mode=a.mode, source_run=str(source_run), model="HiDream-ai/VAREdit",
+                    checkpoint="8B-512.pth", cfg=CFG, tau=TAU, seed=SEED,
+                    weights_snapshot=weights.name if weights else None, code_commit=commit)
+    if components is not None:
+        settings.update(torch=torch.__version__, gpu=torch.cuda.get_device_name(0))
+    (out / "settings.json").write_text(json.dumps(settings, indent=2))
+    (out / "cases.json").write_text(json.dumps(cases, indent=2))
+    print(f"Mode: {a.mode} | Images: {len(cases)} | Output: {out}", flush=True)
 
-    # 4. Save a comparison to open in VS Code or download from the cluster.
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-    for ax, image, title in zip(axes, [original, edited], ["Original", "Edited"]):
-        ax.imshow(image)
-        ax.set_title(title)
-        ax.axis("off")
-    fig.tight_layout()
-    fig.savefig(OUT / f"{name}_comparison.png", dpi=150)
-    plt.close(fig)
+    for case in cases:
+        pid, sid = case["prompt_id"], case["sample_id"]
+        source = originals[(pid, sid)]
+        metadata = read_metadata(source.parent.parent)
+        target = out / "after" / f"{pid:05d}"
+        (target / "samples").mkdir(parents=True, exist_ok=True)
+        output_image = target / "samples" / f"{sid:04d}.png"
+        (target / "metadata.jsonl").write_text(json.dumps(metadata) + "\n")
+        if case["decision"] != "edit":
+            # No copied original: symlink ensures keep/review still get evaluated.
+            output_image.symlink_to(source)
+            seconds, action = 0.0, "retained_original"
+        else:
+            torch.cuda.synchronize()
+            start = time.perf_counter()
+            with torch.inference_mode():
+                edited = generate_image(components, str(source), case["instruction"],
+                                        cfg=CFG, tau=TAU, seed=SEED)
+            torch.cuda.synchronize()
+            seconds, action = time.perf_counter() - start, "edited"
+            edited.save(output_image)
+        record = dict(**case, action=action, source=str(source),
+                      prompt=metadata["prompt"], seconds=seconds)
+        (out / f"{pid:05d}_{sid:04d}.json").write_text(json.dumps(record, indent=2))
+        print(f"{pid}/{sid}: {action}, {seconds:.2f}s", flush=True)
+    print(f"Complete. Evaluate: {out / 'after'}")
 
-    # Record the actual settings beside each image; manual review stays separate.
-    record = dict(source=str(source), prompt=prompt, instruction=instruction,
-                  model="HiDream-ai/VAREdit", checkpoint="8B-512.pth",
-                  weights_snapshot=weights.name, code_commit=commit,
-                  torch=torch.__version__, gpu=torch.cuda.get_device_name(0),
-                  cfg=CFG, tau=TAU, seed=SEED, seconds=seconds)
-    (OUT / f"{name}.json").write_text(json.dumps(record, indent=2))
-    print(f"Saved {name}: {seconds:.2f}s; results in {OUT}", flush=True)
 
-# Review: did the edit work, did unrelated content survive, and is quality good?
-# First-call timing may include initialization; it is not a formal benchmark.
-# An unchanged instruction is an editing control, not tokenizer reconstruction.
+if __name__ == "__main__":
+    main()
