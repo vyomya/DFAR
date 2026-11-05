@@ -1,6 +1,7 @@
 """Phase 1: frozen baselines, native latents, GenEval output, measured CUDA cost."""
 import argparse
 import importlib.metadata
+import importlib.util
 import json
 import os
 import platform
@@ -15,12 +16,14 @@ def arguments():
     p.add_argument('--lock', default='model_lock.json')
     p.add_argument('--metadata', required=True)
     p.add_argument('--out', required=True)
+    p.add_argument("--unet", help="Directory containing a fine-tuned U-Net")
     p.add_argument('--samples', type=int, default=4)
     p.add_argument('--limit', type=int, help='Smoke only: first N prompts, NOT a benchmark score')
     p.add_argument('--seed', type=int, default=20260922)
     p.add_argument('--offload', choices=['none', 'model', 'sequential'], default='none')
     p.add_argument('--save-latents', action='store_true')
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--lora', help='SD1.5 adapter directory containing pytorch_lora_weights.safetensors')
     a = p.parse_args()
     if a.samples < 1 or (a.limit is not None and a.limit < 1):
         p.error('Samples and limit must be positive.')
@@ -38,11 +41,40 @@ def run(a):
         config = read_json(ROOT / 'configs/models.json')[a.model]
     else:
         raise ValueError('Run prepare.py models first to pin checkpoint revisions.')
-    spec = {'model': a.model, 'config': config, 'metadata_sha256': file_hash(a.metadata),
+    adapter = None
+    if a.lora:
+        if a.model != 'sd15':
+            raise ValueError('This LoRA experiment currently supports sd15 only.')
+        weights = Path(a.lora).resolve() / 'pytorch_lora_weights.safetensors'
+        if not weights.is_file():
+            raise FileNotFoundError(weights)
+        adapter = {'directory': str(weights.parent), 'weight_name': weights.name,
+                   'sha256': file_hash(weights), 'scale': 1.0}
+    if a.unet and a.lora:
+        raise ValueError("Use either --unet or --lora, not both.")
+
+    unet_info = None
+    if a.unet:
+        if a.model != "sd15":
+            raise ValueError("This experiment supports SD1.5 only.")
+        unet_dir = Path(a.unet).resolve()
+        if not (unet_dir / "config.json").is_file():
+            raise FileNotFoundError(unet_dir / "config.json")
+        if not list(unet_dir.glob("*.safetensors")):
+            raise FileNotFoundError(f"No safetensors weights in {unet_dir}")
+        unet_info = {
+            "directory": str(unet_dir),
+            "files_sha256": {
+                str(p.relative_to(unet_dir)): file_hash(p)
+                for p in sorted(unet_dir.rglob("*")) if p.is_file()
+            },
+        }
+    spec = {'lora': adapter, 'model': a.model, 'config': config, 'metadata_sha256': file_hash(a.metadata),
             'samples': a.samples, 'limit': a.limit, 'seed': a.seed, 'offload': a.offload,
             'save_latents': a.save_latents, 'batch_size': 1,
             'scope': 'smoke' if a.limit else 'full-input', 'code_sha256': file_hash(__file__),
             'common_sha256': file_hash(ROOT / 'common.py')}
+    spec["unet"] = unet_info
     if a.dry_run:
         print(json.dumps({'configuration': spec, 'images': len(selected)*a.samples,
                           'first_seed': sample_seed(0, 0, a.seed)}, indent=2))
@@ -59,6 +91,7 @@ def run(a):
            'gpu': torch.cuda.get_device_name(0), 'gpu_total_bytes': torch.cuda.get_device_properties(0).total_memory,
            'packages': {name: importlib.metadata.version(name) for name in
                         ['torch', 'diffusers', 'transformers', 'accelerate', 'safetensors', 'huggingface-hub']}}
+    env['packages']['peft'] = importlib.metadata.version('peft') if importlib.util.find_spec('peft') else None
     spec['environment'] = env
     signature = digest(spec)
     out = Path(a.out)
@@ -78,8 +111,25 @@ def run(a):
         return
     pipeline_type = getattr(diffusers, config['pipeline'])
     load_start = time.perf_counter()
-    pipe = pipeline_type.from_pretrained(config['repo'], revision=config['revision'],
-                 torch_dtype=dtype, use_safetensors=True)
+    extra = {}
+    if unet_info:
+        extra["unet"] = diffusers.UNet2DConditionModel.from_pretrained(
+            unet_info["directory"],
+            torch_dtype=dtype,
+            use_safetensors=True,
+        )
+
+    pipe = pipeline_type.from_pretrained(
+        config["repo"],
+        revision=config["revision"],
+        torch_dtype=dtype,
+        use_safetensors=True,
+        **extra,
+    )
+    if adapter:
+        pipe.load_lora_weights(adapter['directory'], weight_name=adapter['weight_name'],
+                               adapter_name='correction')
+        pipe.set_adapters('correction', adapter_weights=1.0)
     for component in pipe.components.values():
         if isinstance(component, torch.nn.Module):
             component.requires_grad_(False).eval()
@@ -117,7 +167,11 @@ def run(a):
         for i, m, j in pending:
             folder, image_path, record_path = sample_paths(out, i, j)
             image_path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_json(folder / 'metadata.jsonl', m)
+            # GenEval expects one complete JSON object on the first line.
+            metadata_path = folder / 'metadata.jsonl'
+            metadata_tmp = folder / 'metadata.jsonl.tmp'
+            metadata_tmp.write_text(json.dumps(m, ensure_ascii=False) + '\n')
+            os.replace(metadata_tmp, metadata_path)
             capture.clear()
             seed = sample_seed(i, j, a.seed)
             torch.cuda.synchronize()
